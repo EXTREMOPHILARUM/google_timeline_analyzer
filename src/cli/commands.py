@@ -384,6 +384,21 @@ def detect(
         "--end",
         "-e",
         help="End date filter (YYYY-MM-DD)"
+    ),
+    min_distance: float = typer.Option(
+        5.0,
+        "--min-distance",
+        help="Minimum trip distance in km (default: 5)"
+    ),
+    min_duration: float = typer.Option(
+        1.0,
+        "--min-duration",
+        help="Minimum trip duration in hours (default: 1)"
+    ),
+    distance_threshold: float = typer.Option(
+        20.0,
+        "--distance-threshold",
+        help="Distance from home to consider as trip in km (default: 20)"
     )
 ):
     """
@@ -428,7 +443,12 @@ def detect(
 
         # Run selected algorithm(s)
         if algorithm == "all":
-            stats = detector.detect_all_trips(start_dt, end_dt)
+            stats = detector.detect_all_trips(
+                start_dt, end_dt,
+                min_distance_km=min_distance,
+                min_duration_hours=min_duration,
+                distance_threshold_km=distance_threshold
+            )
 
         elif algorithm == "memory":
             console.print("[cyan]Running Timeline Memory Detection...")
@@ -438,7 +458,11 @@ def detect(
 
         elif algorithm == "home":
             console.print("[cyan]Running Home-Based Detection...")
-            count = detector.detect_home_based_trips(start_dt, end_dt)
+            count = detector.detect_home_based_trips(
+                start_dt, end_dt,
+                min_distance_km=min_distance,
+                min_duration_hours=min_duration
+            )
             stats = {'home_based': count}
             console.print(f"[green]Found {count} trips")
 
@@ -450,7 +474,10 @@ def detect(
 
         elif algorithm == "distance":
             console.print("[cyan]Running Distance-Based Clustering...")
-            count = detector.detect_distance_based_trips(start_dt, end_dt)
+            count = detector.detect_distance_based_trips(
+                start_dt, end_dt,
+                distance_threshold_km=distance_threshold
+            )
             stats = {'distance_based': count}
             console.print(f"[green]Found {count} trips")
 

@@ -43,7 +43,10 @@ class TripDetector:
     def detect_all_trips(
         self,
         start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None
+        end_date: Optional[datetime] = None,
+        min_distance_km: float = 5.0,
+        min_duration_hours: float = 1.0,
+        distance_threshold_km: float = 20.0
     ) -> dict[str, int]:
         """
         Run all trip detection algorithms.
@@ -51,6 +54,9 @@ class TripDetector:
         Args:
             start_date: Optional start date filter
             end_date: Optional end date filter
+            min_distance_km: Minimum trip distance in km
+            min_duration_hours: Minimum trip duration in hours
+            distance_threshold_km: Distance from home to consider as trip
 
         Returns:
             Dictionary with counts per algorithm
@@ -58,6 +64,7 @@ class TripDetector:
         stats = {}
 
         console.print("[bold cyan]Running all trip detection algorithms...[/bold cyan]")
+        console.print(f"[dim]Parameters: min_distance={min_distance_km}km, min_duration={min_duration_hours}h, distance_threshold={distance_threshold_km}km[/dim]")
         console.print()
 
         # Algorithm 1: Timeline Memory
@@ -69,7 +76,7 @@ class TripDetector:
 
         # Algorithm 2: Home-Based
         console.print("[cyan]2. Home-Based Detection...")
-        count = self.detect_home_based_trips(start_date, end_date)
+        count = self.detect_home_based_trips(start_date, end_date, min_distance_km, min_duration_hours)
         stats['home_based'] = count
         console.print(f"[green]   Found {count} trips from home base")
         console.print()
@@ -83,7 +90,7 @@ class TripDetector:
 
         # Algorithm 4: Distance-Based
         console.print("[cyan]4. Distance-Based Clustering...")
-        count = self.detect_distance_based_trips(start_date, end_date)
+        count = self.detect_distance_based_trips(start_date, end_date, distance_threshold_km)
         stats['distance_based'] = count
         console.print(f"[green]   Found {count} distance-based trips")
         console.print()
