@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: timeline_postgres
+    environment:
+      POSTGRES_DB: timeline_analyzer
+      POSTGRES_USER: timeline_user
+      POSTGRES_PASSWORD: timeline_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/storage/schema.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U timeline_user -d timeline_analyzer"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: timeline_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build: .
+    container_name: timeline_app
+    environment:
+      DATABASE_URL: postgresql://timeline_user:timeline_pass@postgres:5432/timeline_analyzer
+      REDIS_URL: redis://redis:6379
+      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY}
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - ./Timeline.json:/app/Timeline.json:ro
+      - ./exports:/app/exports
+      - ./src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: tail -f /dev/null
+
+volumes:
+  postgres_data:
+  redis_data:
