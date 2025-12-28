@@ -670,11 +670,15 @@ class TripDetector:
             ActivityModel.activity_type
         ).order_by(func.sum(ActivityModel.distance_meters).desc()).all()
 
-        # Get trip counts per transport mode (from trips, just for count)
+        # Get trip counts per transport mode (from home_based trips only, to avoid mega-trips)
+        # Distance-based creates multi-modal mega-trips that aren't representative of transport mode usage
         transport_count_query = self.db.query(
             TripModel.primary_transport_mode,
             func.count(TripModel.id).label('count')
-        ).filter(TripModel.primary_transport_mode.isnot(None))
+        ).filter(
+            TripModel.primary_transport_mode.isnot(None),
+            TripModel.detection_algorithm == 'home_based'  # Only count granular trips
+        )
 
         if start_date:
             transport_count_query = transport_count_query.filter(TripModel.start_time >= start_date)
