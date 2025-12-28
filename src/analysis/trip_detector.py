@@ -653,10 +653,32 @@ class TripDetector:
             distance = algo_distance_query.scalar() or 0
             distance_by_algorithm[algo] = distance / 1000
 
+        # Get transport mode breakdown
+        transport_query = self.db.query(
+            TripModel.primary_transport_mode,
+            func.count(TripModel.id).label('count'),
+            func.sum(TripModel.total_distance_meters).label('distance')
+        ).filter(TripModel.primary_transport_mode.isnot(None))
+
+        if start_date:
+            transport_query = transport_query.filter(TripModel.start_time >= start_date)
+        if end_date:
+            transport_query = transport_query.filter(TripModel.end_time <= end_date)
+
+        transport_modes = transport_query.group_by(
+            TripModel.primary_transport_mode
+        ).order_by(func.sum(TripModel.total_distance_meters).desc()).all()
+
+        by_transport = {
+            mode: {'count': count, 'distance_km': (distance or 0) / 1000}
+            for mode, count, distance in transport_modes
+        }
+
         return {
             'total_trips': total,
             'by_algorithm': dict(by_algorithm),
             'multi_day_trips': multi_day,
             'total_distance_km': actual_distance / 1000,  # Actual distance from activities
-            'distance_by_algorithm': distance_by_algorithm  # Per-algorithm for reference
+            'distance_by_algorithm': distance_by_algorithm,  # Per-algorithm for reference
+            'by_transport_mode': by_transport  # Transport mode breakdown
         }

@@ -503,6 +503,17 @@ def detect(
         table.add_row("Actual Distance Traveled", f"{summary['total_distance_km']:,.2f} km")
         table.add_row("", "")
 
+        # Show transport mode breakdown
+        if summary.get('by_transport_mode'):
+            table.add_row("[bold]By Transport Mode:[/bold]", "")
+            for mode, stats in summary['by_transport_mode'].items():
+                mode_name = mode.replace('_', ' ').replace('IN ', '').title()
+                table.add_row(
+                    f"  {mode_name}",
+                    f"{stats['count']:,} trips ({stats['distance_km']:,.0f} km)"
+                )
+            table.add_row("", "")
+
         # Show per-algorithm breakdown
         table.add_row("[bold]By Detection Algorithm:[/bold]", "")
         for algo, count in summary['by_algorithm'].items():
