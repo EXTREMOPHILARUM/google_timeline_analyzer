@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from collections import defaultdict
 
-from sqlalchemy import func, extract, and_, or_
+from sqlalchemy import func, extract, and_, or_, case
 from sqlalchemy.orm import Session
 from rich.console import Console
 from rich.table import Table
@@ -90,8 +90,9 @@ class TripStatistics:
             func.sum(TripModel.total_distance_meters).label('total_distance'),
             func.avg(TripModel.total_distance_meters).label('avg_distance'),
             func.count(func.distinct(
-                func.case(
-                    (TripModel.is_multi_day == True, TripModel.id)
+                case(
+                    (TripModel.is_multi_day == True, TripModel.id),
+                    else_=None
                 )
             )).label('multi_day_count')
         ).group_by('year').order_by('year').all()

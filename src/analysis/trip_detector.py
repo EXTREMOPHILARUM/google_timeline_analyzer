@@ -181,11 +181,13 @@ class TripDetector:
         """
         # Get user home location
         profile = self.db.query(UserProfileModel).first()
-        if not profile or not profile.home_place_id:
+        if not profile or (not profile.home_place_id and not profile.home_location):
             console.print("[yellow]   No home location set, skipping home-based detection")
             return 0
 
         home_place_id = profile.home_place_id
+        home_location = profile.home_location
+        use_distance_based = home_place_id is None and home_location is not None
 
         # Get all segments chronologically
         query = self.db.query(TimelineSegment).order_by(TimelineSegment.start_time)
@@ -206,7 +208,15 @@ class TripDetector:
             # Check if this is a home visit
             is_home = False
             if segment.visit:
-                is_home = segment.visit.place_id == home_place_id
+                if use_distance_based and segment.visit.location and home_location:
+                    # Use distance-based check (within 1km of home)
+                    distance = self.db.query(
+                        ST_Distance(home_location, segment.visit.location)
+                    ).scalar()
+                    is_home = distance and (distance / 1000) < 1.0
+                elif home_place_id:
+                    # Use place_id check
+                    is_home = segment.visit.place_id == home_place_id
 
             if is_home:
                 # At home - potentially end current trip
@@ -267,21 +277,37 @@ class TripDetector:
         """
         # Get user home location
         profile = self.db.query(UserProfileModel).first()
-        if not profile or not profile.home_place_id:
+        if not profile or (not profile.home_place_id and not profile.home_location):
             console.print("[yellow]   No home location set, skipping overnight detection")
             return 0
 
         home_place_id = profile.home_place_id
+        home_location = profile.home_location
+        use_distance_based = home_place_id is None and home_location is not None
 
         # Find overnight visits (6+ hours between 8pm-8am) not at home
-        query = self.db.query(VisitModel, TimelineSegment).join(
-            TimelineSegment, VisitModel.segment_id == TimelineSegment.id
-        ).filter(
-            VisitModel.place_id != home_place_id,
-            func.extract('hour', TimelineSegment.start_time) >= 20,  # After 8pm
-            func.extract('hour', TimelineSegment.end_time) <= 8,      # Before 8am
-            TimelineSegment.duration_seconds >= 6 * 3600              # At least 6 hours
-        ).order_by(TimelineSegment.start_time)
+        # Calculate duration in seconds using EXTRACT(EPOCH FROM ...)
+        duration_expr = func.extract('epoch', TimelineSegment.end_time - TimelineSegment.start_time)
+
+        if use_distance_based:
+            # Use distance-based filtering - query all overnight visits
+            query = self.db.query(VisitModel, TimelineSegment).join(
+                TimelineSegment, VisitModel.segment_id == TimelineSegment.id
+            ).filter(
+                func.extract('hour', TimelineSegment.start_time) >= 20,  # After 8pm
+                func.extract('hour', TimelineSegment.end_time) <= 8,      # Before 8am
+                duration_expr >= 6 * 3600                                  # At least 6 hours
+            ).order_by(TimelineSegment.start_time)
+        else:
+            # Use place_id filtering
+            query = self.db.query(VisitModel, TimelineSegment).join(
+                TimelineSegment, VisitModel.segment_id == TimelineSegment.id
+            ).filter(
+                VisitModel.place_id != home_place_id,
+                func.extract('hour', TimelineSegment.start_time) >= 20,  # After 8pm
+                func.extract('hour', TimelineSegment.end_time) <= 8,      # Before 8am
+                duration_expr >= 6 * 3600                                  # At least 6 hours
+            ).order_by(TimelineSegment.start_time)
 
         if start_date:
             query = query.filter(TimelineSegment.start_time >= start_date)
@@ -289,6 +315,19 @@ class TripDetector:
             query = query.filter(TimelineSegment.end_time <= end_date)
 
         overnight_visits = query.all()
+
+        # Filter by distance if using distance-based detection
+        if use_distance_based:
+            filtered_visits = []
+            for visit, segment in overnight_visits:
+                if visit.location and home_location:
+                    distance = self.db.query(
+                        ST_Distance(home_location, visit.location)
+                    ).scalar()
+                    # Only include visits >1km from home
+                    if distance and (distance / 1000) >= 1.0:
+                        filtered_visits.append((visit, segment))
+            overnight_visits = filtered_visits
 
         # Group into trips
         current_trip_visits = []
