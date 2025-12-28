@@ -14,7 +14,7 @@ from collections import defaultdict
 
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from geoalchemy2.functions import ST_Distance
 from shapely.geometry import Point
@@ -39,6 +39,30 @@ class TripDetector:
     def __init__(self, db_session: Session):
         """Initialize trip detector."""
         self.db = db_session
+
+    def _calculate_distance_meters(self, location1, location2) -> float:
+        """
+        Calculate distance between two geography points in meters.
+
+        Uses raw SQL to avoid GeoAlchemy2 ST_Distance bug with geography types.
+        """
+        if not location1 or not location2:
+            return 0.0
+
+        # Get WKT representations and use ST_GeogFromText
+        wkt1 = self.db.query(func.ST_AsText(location1)).scalar()
+        wkt2 = self.db.query(func.ST_AsText(location2)).scalar()
+
+        if not wkt1 or not wkt2:
+            return 0.0
+
+        # Calculate distance using geography type
+        result = self.db.execute(
+            text("SELECT ST_Distance(ST_GeogFromText(:wkt1), ST_GeogFromText(:wkt2))"),
+            {"wkt1": wkt1, "wkt2": wkt2}
+        ).scalar()
+
+        return float(result) if result else 0.0
 
     def detect_all_trips(
         self,
@@ -178,7 +202,9 @@ class TripDetector:
         min_duration_hours: float = 4
     ) -> int:
         """
-        Detect trips as sequences starting/ending at home.
+        Detect trips by grouping similar transport modes and nearby activities.
+
+        Uses transport mode changes and day boundaries to separate trips.
 
         Args:
             start_date: Optional start date filter
@@ -186,18 +212,10 @@ class TripDetector:
             min_distance_km: Minimum trip distance in kilometers
             min_duration_hours: Minimum trip duration in hours
         """
-        # Get user home location
-        profile = self.db.query(UserProfileModel).first()
-        if not profile or (not profile.home_place_id and not profile.home_location):
-            console.print("[yellow]   No home location set, skipping home-based detection")
-            return 0
-
-        home_place_id = profile.home_place_id
-        home_location = profile.home_location
-        use_distance_based = home_place_id is None and home_location is not None
-
-        # Get all segments chronologically
-        query = self.db.query(TimelineSegment).order_by(TimelineSegment.start_time)
+        # Get all activity segments chronologically (activities have transport modes)
+        query = self.db.query(TimelineSegment).filter(
+            TimelineSegment.segment_type == 'activity'
+        ).order_by(TimelineSegment.start_time)
 
         if start_date:
             query = query.filter(TimelineSegment.start_time >= start_date)
@@ -209,61 +227,70 @@ class TripDetector:
         current_trip_segments = []
         current_trip_distance = 0
         current_trip_destinations = set()
+        current_trip_mode = None
         trip_count = 0
 
         for segment in segments:
-            # Check if this is a home visit
-            is_home = False
-            if segment.visit:
-                if use_distance_based and segment.visit.location and home_location:
-                    # Use distance-based check (within 1km of home)
-                    distance = self.db.query(
-                        ST_Distance(home_location, segment.visit.location)
-                    ).scalar()
-                    is_home = distance and (distance / 1000) < 1.0
-                elif home_place_id:
-                    # Use place_id check
-                    is_home = segment.visit.place_id == home_place_id
+            if not segment.activity:
+                continue
 
-            if is_home:
-                # At home - potentially end current trip
-                if current_trip_segments:
-                    # Calculate trip metrics
+            activity_type = segment.activity.activity_type
+
+            if not current_trip_segments:
+                # Start new trip
+                current_trip_segments.append(segment)
+                current_trip_mode = activity_type
+                current_trip_distance += segment.activity.distance_meters or 0
+            else:
+                # Check if transport mode changed or day changed
+                day_changed = segment.start_time.date() != current_trip_segments[-1].end_time.date()
+                mode_changed = activity_type != current_trip_mode
+
+                if not mode_changed and not day_changed:
+                    # Continue current trip
+                    current_trip_segments.append(segment)
+                    current_trip_distance += segment.activity.distance_meters or 0
+                else:
+                    # Save previous trip if it meets criteria
                     trip_start = current_trip_segments[0].start_time
-                    trip_end = segment.start_time
+                    trip_end = current_trip_segments[-1].end_time
                     duration_hours = (trip_end - trip_start).total_seconds() / 3600
 
-                    # Check if meets minimum criteria
                     if (current_trip_distance / 1000 >= min_distance_km and
                         duration_hours >= min_duration_hours):
-
-                        # Create trip
                         self._create_trip(
                             start_time=trip_start,
                             end_time=trip_end,
                             segments=current_trip_segments,
                             distance_meters=current_trip_distance,
-                            destinations=list(current_trip_destinations),
+                            destinations=[],
                             algorithm='home_based'
                         )
                         trip_count += 1
 
-                    # Reset for next trip
-                    current_trip_segments = []
-                    current_trip_distance = 0
+                    # Start new trip
+                    current_trip_segments = [segment]
+                    current_trip_mode = activity_type
+                    current_trip_distance = segment.activity.distance_meters or 0
                     current_trip_destinations = set()
 
-            else:
-                # Not at home - add to current trip
-                current_trip_segments.append(segment)
+        # Don't forget last trip
+        if current_trip_segments:
+            trip_start = current_trip_segments[0].start_time
+            trip_end = current_trip_segments[-1].end_time
+            duration_hours = (trip_end - trip_start).total_seconds() / 3600
 
-                # Add distance if activity
-                if segment.activity:
-                    current_trip_distance += segment.activity.distance_meters or 0
-
-                # Add destination if visit
-                if segment.visit and segment.visit.place_id:
-                    current_trip_destinations.add(segment.visit.place_id)
+            if (current_trip_distance / 1000 >= min_distance_km and
+                duration_hours >= min_duration_hours):
+                self._create_trip(
+                    start_time=trip_start,
+                    end_time=trip_end,
+                    segments=current_trip_segments,
+                    distance_meters=current_trip_distance,
+                    destinations=[],
+                    algorithm='home_based'
+                )
+                trip_count += 1
 
         self.db.commit()
         return trip_count
@@ -328,11 +355,9 @@ class TripDetector:
             filtered_visits = []
             for visit, segment in overnight_visits:
                 if visit.location and home_location:
-                    distance = self.db.query(
-                        ST_Distance(home_location, visit.location)
-                    ).scalar()
+                    distance = self._calculate_distance_meters(home_location, visit.location)
                     # Only include visits >1km from home
-                    if distance and (distance / 1000) >= 1.0:
+                    if distance >= 1000:
                         filtered_visits.append((visit, segment))
             overnight_visits = filtered_visits
 
@@ -417,11 +442,9 @@ class TripDetector:
 
             if location:
                 # Calculate distance from home
-                distance = self.db.query(
-                    ST_Distance(profile.home_location, location)
-                ).scalar()
+                distance = self._calculate_distance_meters(profile.home_location, location)
 
-                if distance and distance / 1000 >= distance_threshold_km:
+                if distance >= distance_threshold_km * 1000:  # Convert km to meters
                     far_segments.append(segment)
 
         # Cluster by time gaps
