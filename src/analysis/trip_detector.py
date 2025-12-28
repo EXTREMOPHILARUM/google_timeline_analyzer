@@ -578,26 +578,85 @@ class TripDetector:
             algorithm='distance_based'
         )
 
-    def get_trip_summary(self) -> dict:
-        """Get summary statistics about detected trips."""
-        total = self.db.query(func.count(TripModel.id)).scalar()
+    def get_trip_summary(
+        self,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> dict:
+        """
+        Get summary statistics about detected trips.
 
-        by_algorithm = self.db.query(
+        Args:
+            start_date: Optional start date filter
+            end_date: Optional end date filter
+
+        Returns:
+            Dictionary with trip statistics including actual distance traveled
+        """
+        # Base query
+        trip_query = self.db.query(TripModel)
+        if start_date:
+            trip_query = trip_query.filter(TripModel.start_time >= start_date)
+        if end_date:
+            trip_query = trip_query.filter(TripModel.end_time <= end_date)
+
+        # Count trips
+        total = trip_query.count()
+
+        # Count by algorithm
+        by_algorithm_query = self.db.query(
             TripModel.detection_algorithm,
             func.count(TripModel.id)
-        ).group_by(TripModel.detection_algorithm).all()
+        )
+        if start_date:
+            by_algorithm_query = by_algorithm_query.filter(TripModel.start_time >= start_date)
+        if end_date:
+            by_algorithm_query = by_algorithm_query.filter(TripModel.end_time <= end_date)
 
-        multi_day = self.db.query(func.count(TripModel.id)).filter(
+        by_algorithm = by_algorithm_query.group_by(TripModel.detection_algorithm).all()
+
+        # Count multi-day trips
+        multi_day_query = self.db.query(func.count(TripModel.id)).filter(
             TripModel.is_multi_day == True
-        ).scalar()
+        )
+        if start_date:
+            multi_day_query = multi_day_query.filter(TripModel.start_time >= start_date)
+        if end_date:
+            multi_day_query = multi_day_query.filter(TripModel.end_time <= end_date)
 
-        total_distance = self.db.query(
-            func.sum(TripModel.total_distance_meters)
-        ).scalar() or 0
+        multi_day = multi_day_query.scalar()
+
+        # Calculate ACTUAL distance from unique activities (avoid double-counting overlapping trips)
+        activity_query = self.db.query(
+            func.sum(ActivityModel.distance_meters)
+        ).join(
+            TimelineSegment, ActivityModel.segment_id == TimelineSegment.id
+        )
+        if start_date:
+            activity_query = activity_query.filter(TimelineSegment.start_time >= start_date)
+        if end_date:
+            activity_query = activity_query.filter(TimelineSegment.end_time <= end_date)
+
+        actual_distance = activity_query.scalar() or 0
+
+        # Calculate per-algorithm distances for comparison
+        distance_by_algorithm = {}
+        for algo, _ in by_algorithm:
+            algo_distance_query = self.db.query(
+                func.sum(TripModel.total_distance_meters)
+            ).filter(TripModel.detection_algorithm == algo)
+            if start_date:
+                algo_distance_query = algo_distance_query.filter(TripModel.start_time >= start_date)
+            if end_date:
+                algo_distance_query = algo_distance_query.filter(TripModel.end_time <= end_date)
+
+            distance = algo_distance_query.scalar() or 0
+            distance_by_algorithm[algo] = distance / 1000
 
         return {
             'total_trips': total,
             'by_algorithm': dict(by_algorithm),
             'multi_day_trips': multi_day,
-            'total_distance_km': total_distance / 1000
+            'total_distance_km': actual_distance / 1000,  # Actual distance from activities
+            'distance_by_algorithm': distance_by_algorithm  # Per-algorithm for reference
         }

@@ -491,8 +491,8 @@ def detect(
         console.print("[bold green]Trip Detection Complete! ✓[/bold green]")
         console.print()
 
-        # Get overall summary
-        summary = detector.get_trip_summary()
+        # Get overall summary with date filters
+        summary = detector.get_trip_summary(start_dt, end_dt)
 
         table = Table(show_header=True, header_style="bold cyan")
         table.add_column("Metric", style="dim")
@@ -500,11 +500,14 @@ def detect(
 
         table.add_row("Total Trips Detected", f"{summary['total_trips']:,}")
         table.add_row("Multi-Day Trips", f"{summary['multi_day_trips']:,}")
-        table.add_row("Total Distance", f"{summary['total_distance_km']:,.2f} km")
+        table.add_row("Actual Distance Traveled", f"{summary['total_distance_km']:,.2f} km")
         table.add_row("", "")
 
+        # Show per-algorithm breakdown
+        table.add_row("[bold]By Detection Algorithm:[/bold]", "")
         for algo, count in summary['by_algorithm'].items():
-            table.add_row(f"  {algo}", f"{count:,}")
+            algo_distance = summary['distance_by_algorithm'].get(algo, 0)
+            table.add_row(f"  {algo}", f"{count:,} trips ({algo_distance:,.0f} km)")
 
         console.print(table)
         console.print()
