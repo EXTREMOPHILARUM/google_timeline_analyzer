@@ -386,19 +386,19 @@ def detect(
         help="End date filter (YYYY-MM-DD)"
     ),
     min_distance: float = typer.Option(
-        5.0,
+        0.5,
         "--min-distance",
-        help="Minimum trip distance in km (default: 5)"
+        help="Minimum trip distance in km (default: 0.5)"
     ),
     min_duration: float = typer.Option(
-        1.0,
+        0.1,
         "--min-duration",
-        help="Minimum trip duration in hours (default: 1)"
+        help="Minimum trip duration in hours (default: 0.1)"
     ),
     distance_threshold: float = typer.Option(
-        20.0,
+        5.0,
         "--distance-threshold",
-        help="Distance from home to consider as trip in km (default: 20)"
+        help="Distance from home to consider as trip in km (default: 5)"
     )
 ):
     """

@@ -44,9 +44,9 @@ class TripDetector:
         self,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
-        min_distance_km: float = 5.0,
-        min_duration_hours: float = 1.0,
-        distance_threshold_km: float = 20.0
+        min_distance_km: float = 0.5,
+        min_duration_hours: float = 0.1,
+        distance_threshold_km: float = 5.0
     ) -> dict[str, int]:
         """
         Run all trip detection algorithms.
