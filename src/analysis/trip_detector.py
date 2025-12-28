@@ -653,26 +653,43 @@ class TripDetector:
             distance = algo_distance_query.scalar() or 0
             distance_by_algorithm[algo] = distance / 1000
 
-        # Get transport mode breakdown
-        transport_query = self.db.query(
+        # Get transport mode breakdown from ACTIVITIES (not trips, to avoid double-counting)
+        transport_activity_query = self.db.query(
+            ActivityModel.activity_type,
+            func.sum(ActivityModel.distance_meters).label('distance')
+        ).join(
+            TimelineSegment, ActivityModel.segment_id == TimelineSegment.id
+        )
+
+        if start_date:
+            transport_activity_query = transport_activity_query.filter(TimelineSegment.start_time >= start_date)
+        if end_date:
+            transport_activity_query = transport_activity_query.filter(TimelineSegment.end_time <= end_date)
+
+        transport_distances = transport_activity_query.group_by(
+            ActivityModel.activity_type
+        ).order_by(func.sum(ActivityModel.distance_meters).desc()).all()
+
+        # Get trip counts per transport mode (from trips, just for count)
+        transport_count_query = self.db.query(
             TripModel.primary_transport_mode,
-            func.count(TripModel.id).label('count'),
-            func.sum(TripModel.total_distance_meters).label('distance')
+            func.count(TripModel.id).label('count')
         ).filter(TripModel.primary_transport_mode.isnot(None))
 
         if start_date:
-            transport_query = transport_query.filter(TripModel.start_time >= start_date)
+            transport_count_query = transport_count_query.filter(TripModel.start_time >= start_date)
         if end_date:
-            transport_query = transport_query.filter(TripModel.end_time <= end_date)
+            transport_count_query = transport_count_query.filter(TripModel.end_time <= end_date)
 
-        transport_modes = transport_query.group_by(
-            TripModel.primary_transport_mode
-        ).order_by(func.sum(TripModel.total_distance_meters).desc()).all()
+        transport_counts = {mode: count for mode, count in transport_count_query.group_by(TripModel.primary_transport_mode).all()}
 
-        by_transport = {
-            mode: {'count': count, 'distance_km': (distance or 0) / 1000}
-            for mode, count, distance in transport_modes
-        }
+        # Combine: actual distances from activities, trip counts from trips
+        by_transport = {}
+        for mode, distance in transport_distances:
+            by_transport[mode] = {
+                'count': transport_counts.get(mode, 0),
+                'distance_km': (distance or 0) / 1000
+            }
 
         return {
             'total_trips': total,
