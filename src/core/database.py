@@ -67,11 +67,7 @@ class TimelineSegment(Base):
     segment_type = Column(String(20), nullable=False, index=True)
     start_time = Column(DateTime(timezone=True), nullable=False, index=True)
     end_time = Column(DateTime(timezone=True), nullable=False)
-    duration_seconds = Column(
-        Integer,
-        Computed("EXTRACT(EPOCH FROM (end_time - start_time))"),
-        stored=True
-    )
+    # Note: duration_seconds is a generated column, added via migration SQL
     timezone_offset_minutes = Column(Integer)
     raw_data = Column(JSONB)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
@@ -230,11 +226,21 @@ class TravelModeAffinityModel(Base):
 
 def init_db():
     """
-    Initialize the database by creating all tables.
+    Initialize database connection verification.
 
-    Note: In production, use Alembic for migrations instead.
+    IMPORTANT: This function no longer creates tables directly.
+    Use Alembic migrations to manage database schema:
+        - Run migrations: `alembic upgrade head`
+        - Or use CLI: `python3 -m src.cli.commands migrate`
+
+    This function now only verifies that the database connection is working.
     """
-    Base.metadata.create_all(bind=engine)
+    try:
+        # Verify database connection is working
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as e:
+        raise RuntimeError(f"Database connection failed: {e}")
 
 
 def drop_all_tables():

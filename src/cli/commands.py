@@ -45,10 +45,10 @@ def import_timeline(
         file_okay=True,
         dir_okay=False
     ),
-    init_database: bool = typer.Option(
+    run_migrations: bool = typer.Option(
         True,
-        "--init-db/--no-init-db",
-        help="Initialize database schema before import"
+        "--migrate/--no-migrate",
+        help="Run database migrations before import"
     )
 ):
     """
@@ -60,15 +60,14 @@ def import_timeline(
     console.print("[bold blue]Google Timeline Analyzer - Import[/bold blue]")
     console.print()
 
-    # Initialize database if requested
-    if init_database:
-        console.print("[cyan]Initializing database schema...")
-        try:
-            init_db()
-            console.print("[green]Database schema initialized successfully")
-        except Exception as e:
-            console.print(f"[red]Error initializing database: {e}")
+    # Run database migrations if requested
+    if run_migrations:
+        console.print("[cyan]Running database migrations...")
+        from ..core.migrations import run_migrations as run_alembic_migrations
+        if not run_alembic_migrations():
+            console.print("[red]Migration failed, aborting import")
             raise typer.Exit(1)
+        console.print()
 
     # Get database session
     db = get_db()
@@ -224,21 +223,56 @@ def enrich(
         "--limit",
         "-l",
         help="Limit number of places to enrich (for testing)"
+    ),
+    start_date: Optional[str] = typer.Option(
+        None,
+        "--start",
+        "-s",
+        help="Start date filter (YYYY-MM-DD)"
+    ),
+    end_date: Optional[str] = typer.Option(
+        None,
+        "--end",
+        "-e",
+        help="End date filter (YYYY-MM-DD)"
     )
 ):
     """
     Enrich places with Google Places API data.
 
-    Fetches detailed information for all unique place IDs found in your
-    timeline, including names, addresses, ratings, photos, and more.
+    Fetches detailed information for unique place IDs found in your
+    timeline. Use --start and --end to only enrich places visited
+    within a specific date range, reducing API costs.
     Results are cached in PostgreSQL and optionally Redis.
     """
     import asyncio
     from ..enrichment.places_api import PlacesAPIClient
-    from ..core.database import VisitModel, TimelineMemoryModel
+    from ..core.database import VisitModel, TimelineMemoryModel, TimelineSegment
 
     console.print("[bold blue]Google Timeline Analyzer - Enrich Places[/bold blue]")
     console.print()
+
+    # Parse date filters
+    start_dt = None
+    end_dt = None
+
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date)
+            console.print(f"[cyan]Start date: {start_dt.date()}")
+        except ValueError:
+            console.print(f"[red]Invalid start date: {start_date}")
+            console.print("[yellow]Use format: YYYY-MM-DD")
+            raise typer.Exit(1)
+
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date)
+            console.print(f"[cyan]End date: {end_dt.date()}")
+        except ValueError:
+            console.print(f"[red]Invalid end date: {end_date}")
+            console.print("[yellow]Use format: YYYY-MM-DD")
+            raise typer.Exit(1)
 
     # Check API key
     if not settings.google_places_api_key:
@@ -250,16 +284,35 @@ def enrich(
     db = get_db()
 
     try:
-        # Extract unique place IDs
-        console.print("[cyan]Extracting unique place IDs from timeline...")
+        # Extract unique place IDs with optional date filtering
+        if start_dt or end_dt:
+            console.print("[cyan]Extracting unique place IDs from timeline (with date filter)...")
+        else:
+            console.print("[cyan]Extracting unique place IDs from timeline (all dates)...")
 
-        # Get unique place IDs from visits
-        visit_place_ids = db.query(VisitModel.place_id).distinct().filter(
-            VisitModel.place_id.isnot(None)
-        ).all()
+        # Get unique place IDs from visits (join with timeline_segments for date filtering)
+        visit_query = db.query(VisitModel.place_id).join(
+            TimelineSegment, VisitModel.segment_id == TimelineSegment.id
+        ).filter(VisitModel.place_id.isnot(None))
 
-        # Get unique place IDs from timeline memories
-        memory_place_ids = db.query(TimelineMemoryModel.destination_place_ids).all()
+        if start_dt:
+            visit_query = visit_query.filter(TimelineSegment.start_time >= start_dt)
+        if end_dt:
+            visit_query = visit_query.filter(TimelineSegment.end_time <= end_dt)
+
+        visit_place_ids = visit_query.distinct().all()
+
+        # Get unique place IDs from timeline memories (join with timeline_segments for date filtering)
+        memory_query = db.query(TimelineMemoryModel.destination_place_ids).join(
+            TimelineSegment, TimelineMemoryModel.segment_id == TimelineSegment.id
+        )
+
+        if start_dt:
+            memory_query = memory_query.filter(TimelineSegment.start_time >= start_dt)
+        if end_dt:
+            memory_query = memory_query.filter(TimelineSegment.end_time <= end_dt)
+
+        memory_place_ids = memory_query.all()
 
         # Flatten and deduplicate
         place_ids = set()
@@ -777,6 +830,124 @@ def export(
 
 
 @app.command()
+def migrate(
+    revision: str = typer.Argument(
+        "head",
+        help="Revision to migrate to (default: head for latest)"
+    )
+):
+    """
+    Run database migrations to upgrade schema.
+
+    This applies pending Alembic migrations to bring the database
+    schema up to date with the current models.
+    """
+    console.print("[bold blue]Database Migration[/bold blue]")
+    console.print()
+
+    from ..core.migrations import run_migrations
+    if run_migrations(revision):
+        console.print("[bold green]Migration completed successfully[/bold green]")
+    else:
+        console.print("[bold red]Migration failed[/bold red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def revision(
+    message: str = typer.Argument(..., help="Migration description"),
+    autogenerate: bool = typer.Option(
+        True,
+        "--autogenerate/--empty",
+        help="Auto-generate migration from model changes"
+    )
+):
+    """
+    Create a new migration revision.
+
+    Generates a new migration file based on model changes (if autogenerate=True)
+    or creates an empty migration template.
+    """
+    console.print("[bold blue]Create Migration Revision[/bold blue]")
+    console.print()
+
+    from ..core.migrations import create_migration
+    if create_migration(message, autogenerate):
+        console.print("[bold green]Migration revision created[/bold green]")
+        console.print("[yellow]Remember to review and edit the migration file if needed[/yellow]")
+    else:
+        console.print("[bold red]Failed to create migration[/bold red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def downgrade(
+    revision: str = typer.Argument(
+        "-1",
+        help="Revision to downgrade to (default: -1 for previous revision)"
+    )
+):
+    """
+    Downgrade database to a previous revision.
+
+    Use with caution - this can result in data loss if migrations
+    drop tables or columns.
+    """
+    console.print("[bold yellow]Database Downgrade[/bold yellow]")
+    console.print()
+
+    # Confirm downgrade
+    confirm = typer.confirm(
+        f"Are you sure you want to downgrade to revision '{revision}'? This may cause data loss."
+    )
+    if not confirm:
+        console.print("[yellow]Downgrade cancelled[/yellow]")
+        raise typer.Abort()
+
+    from ..core.migrations import downgrade_migration
+    if downgrade_migration(revision):
+        console.print("[bold green]Downgrade completed successfully[/bold green]")
+    else:
+        console.print("[bold red]Downgrade failed[/bold red]")
+        raise typer.Exit(1)
+
+
+@app.command(name="migration-history")
+def migration_history(
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show detailed history"
+    )
+):
+    """
+    Display migration history.
+
+    Shows all available migrations and their status.
+    """
+    console.print("[bold blue]Migration History[/bold blue]")
+    console.print()
+
+    from ..core.migrations import get_migration_history, check_migration_status
+
+    # Show current status
+    status = check_migration_status()
+    console.print(f"Current revision: [cyan]{status.get('current_revision', 'None')}[/cyan]")
+    console.print(f"Head revision: [cyan]{status.get('head_revision', 'Unknown')}[/cyan]")
+
+    if status.get('is_up_to_date'):
+        console.print("[green]✓ Database is up to date[/green]")
+    else:
+        console.print("[yellow]⚠ Pending migrations available[/yellow]")
+
+    console.print()
+
+    # Show history
+    get_migration_history(verbose)
+
+
+@app.command()
 def info():
     """
     Display information about the Google Timeline Analyzer.
@@ -798,13 +969,17 @@ def info():
     console.print(f"  Google Places API Key: {'Set' if settings.google_places_api_key else 'Not Set'}")
     console.print()
     console.print("[bold]Available Commands:[/bold]")
-    console.print("  import   - Import Timeline.json data")
-    console.print("  enrich   - Enrich with Google Places API")
-    console.print("  detect   - Detect trips from timeline data")
-    console.print("  analyze  - Analyze trips and patterns")
-    console.print("  export   - Export data to CSV/JSON files")
-    console.print("  stats    - Display quick statistics")
-    console.print("  info     - Display this information")
+    console.print("  import            - Import Timeline.json data")
+    console.print("  enrich            - Enrich with Google Places API")
+    console.print("  detect            - Detect trips from timeline data")
+    console.print("  analyze           - Analyze trips and patterns")
+    console.print("  export            - Export data to CSV/JSON files")
+    console.print("  stats             - Display quick statistics")
+    console.print("  migrate           - Run database migrations")
+    console.print("  revision          - Create new migration revision")
+    console.print("  downgrade         - Downgrade to previous migration")
+    console.print("  migration-history - Show migration history")
+    console.print("  info              - Display this information")
 
 
 if __name__ == "__main__":

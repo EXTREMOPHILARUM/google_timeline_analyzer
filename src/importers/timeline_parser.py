@@ -348,19 +348,44 @@ class TimelineParser:
         except Exception:
             return None
 
-    def extract_unique_place_ids(self) -> list[str]:
+    def extract_unique_place_ids(
+        self,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> list[str]:
         """
-        Extract all unique place IDs from visits and memories.
+        Extract unique place IDs from visits and memories, optionally filtered by date.
 
-        Returns list of place IDs that need Places API enrichment.
+        Args:
+            start_date: Optional start date filter
+            end_date: Optional end date filter
+
+        Returns:
+            List of place IDs that need Places API enrichment.
         """
-        # Get unique place IDs from visits
-        visit_place_ids = self.db.query(VisitModel.place_id).distinct().filter(
-            VisitModel.place_id.isnot(None)
-        ).all()
+        # Get unique place IDs from visits (join with timeline_segments for date filtering)
+        visit_query = self.db.query(VisitModel.place_id).join(
+            TimelineSegment, VisitModel.segment_id == TimelineSegment.id
+        ).filter(VisitModel.place_id.isnot(None))
 
-        # Get unique place IDs from timeline memories
-        memory_place_ids = self.db.query(TimelineMemoryModel.destination_place_ids).all()
+        if start_date:
+            visit_query = visit_query.filter(TimelineSegment.start_time >= start_date)
+        if end_date:
+            visit_query = visit_query.filter(TimelineSegment.end_time <= end_date)
+
+        visit_place_ids = visit_query.distinct().all()
+
+        # Get unique place IDs from timeline memories (join with timeline_segments for date filtering)
+        memory_query = self.db.query(TimelineMemoryModel.destination_place_ids).join(
+            TimelineSegment, TimelineMemoryModel.segment_id == TimelineSegment.id
+        )
+
+        if start_date:
+            memory_query = memory_query.filter(TimelineSegment.start_time >= start_date)
+        if end_date:
+            memory_query = memory_query.filter(TimelineSegment.end_time <= end_date)
+
+        memory_place_ids = memory_query.all()
 
         # Flatten and deduplicate
         place_ids = set()
@@ -371,5 +396,9 @@ class TimelineParser:
             if dest_ids:
                 place_ids.update(dest_ids)
 
-        console.print(f"[cyan]Found {len(place_ids):,} unique place IDs")
+        if start_date or end_date:
+            console.print(f"[cyan]Found {len(place_ids):,} unique place IDs in date range")
+        else:
+            console.print(f"[cyan]Found {len(place_ids):,} unique place IDs")
+
         return sorted(list(place_ids))

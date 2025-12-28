@@ -19,10 +19,22 @@ RUN uv pip install --system --no-cache-dir .
 # Copy application code
 COPY src/ ./src/
 
+# Copy Alembic migration files
+COPY alembic.ini ./
+COPY alembic/ ./alembic/
+
+# Copy and set up docker entrypoint script
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # Create exports directory
 RUN mkdir -p /app/exports
 
 # Set Python path
 ENV PYTHONPATH=/app
 
+# Set entrypoint to run migrations automatically
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+
+# Default command
 CMD ["/bin/bash"]
