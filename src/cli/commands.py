@@ -4,6 +4,7 @@ CLI commands for Google Timeline Analyzer.
 Provides commands for importing, enriching, analyzing timeline data.
 """
 
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
