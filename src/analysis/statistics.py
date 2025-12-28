@@ -68,27 +68,38 @@ class TripStatistics:
                 'single_day_trips': 0,
             }
 
-        total_distance = sum(t.total_distance_meters for t in trips)
+        # Calculate actual distance from activities (avoid double-counting overlapping trips)
+        activity_query = self.db.query(
+            func.sum(ActivityModel.distance_meters)
+        ).join(
+            TimelineSegment, ActivityModel.segment_id == TimelineSegment.id
+        )
+        if start_date:
+            activity_query = activity_query.filter(TimelineSegment.start_time >= start_date)
+        if end_date:
+            activity_query = activity_query.filter(TimelineSegment.end_time <= end_date)
+
+        actual_distance = activity_query.scalar() or 0
+
         total_duration = sum((t.end_time - t.start_time).total_seconds() for t in trips)
         multi_day = sum(1 for t in trips if t.is_multi_day)
 
         return {
             'total_trips': len(trips),
-            'total_distance_km': total_distance / 1000,
+            'total_distance_km': actual_distance / 1000,  # Actual distance from activities
             'total_duration_hours': total_duration / 3600,
-            'avg_distance_km': (total_distance / 1000) / len(trips),
-            'avg_duration_hours': (total_duration / 3600) / len(trips),
+            'avg_distance_km': (actual_distance / 1000) / len(trips) if trips else 0,
+            'avg_duration_hours': (total_duration / 3600) / len(trips) if trips else 0,
             'multi_day_trips': multi_day,
             'single_day_trips': len(trips) - multi_day,
         }
 
     def get_yearly_statistics(self) -> List[Dict]:
         """Get trip statistics grouped by year."""
-        results = self.db.query(
+        # Get trip counts by year
+        trip_results = self.db.query(
             extract('year', TripModel.start_time).label('year'),
             func.count(TripModel.id).label('trip_count'),
-            func.sum(TripModel.total_distance_meters).label('total_distance'),
-            func.avg(TripModel.total_distance_meters).label('avg_distance'),
             func.count(func.distinct(
                 case(
                     (TripModel.is_multi_day == True, TripModel.id),
@@ -97,13 +108,25 @@ class TripStatistics:
             )).label('multi_day_count')
         ).group_by('year').order_by('year').all()
 
+        # Get actual distances from activities by year
+        distance_results = self.db.query(
+            extract('year', TimelineSegment.start_time).label('year'),
+            func.sum(ActivityModel.distance_meters).label('total_distance')
+        ).join(
+            TimelineSegment, ActivityModel.segment_id == TimelineSegment.id
+        ).group_by('year').all()
+
+        distance_by_year = {int(row.year): (row.total_distance or 0) / 1000 for row in distance_results}
+
         stats = []
-        for row in results:
+        for row in trip_results:
+            year = int(row.year)
+            total_distance_km = distance_by_year.get(year, 0)
             stats.append({
-                'year': int(row.year),
+                'year': year,
                 'trip_count': row.trip_count,
-                'total_distance_km': (row.total_distance or 0) / 1000,
-                'avg_distance_km': (row.avg_distance or 0) / 1000,
+                'total_distance_km': total_distance_km,
+                'avg_distance_km': (total_distance_km / row.trip_count) if row.trip_count > 0 else 0,
                 'multi_day_count': row.multi_day_count or 0,
             })
 
@@ -140,28 +163,45 @@ class TripStatistics:
         Returns:
             Dictionary mapping mode to stats (count, distance, avg_distance)
         """
-        query = self.db.query(
-            TripModel.primary_transport_mode,
-            func.count(TripModel.id).label('count'),
-            func.sum(TripModel.total_distance_meters).label('total_distance'),
-            func.avg(TripModel.total_distance_meters).label('avg_distance'),
-        ).filter(
-            TripModel.primary_transport_mode.isnot(None)
+        # Get actual distances from activities (not trip sums to avoid double-counting)
+        distance_query = self.db.query(
+            ActivityModel.activity_type,
+            func.sum(ActivityModel.distance_meters).label('total_distance')
+        ).join(
+            TimelineSegment, ActivityModel.segment_id == TimelineSegment.id
         )
 
         if start_date:
-            query = query.filter(TripModel.start_time >= start_date)
+            distance_query = distance_query.filter(TimelineSegment.start_time >= start_date)
         if end_date:
-            query = query.filter(TripModel.end_time <= end_date)
+            distance_query = distance_query.filter(TimelineSegment.end_time <= end_date)
 
-        results = query.group_by(TripModel.primary_transport_mode).all()
+        distance_results = distance_query.group_by(ActivityModel.activity_type).all()
+
+        # Get trip counts from home_based trips only (exclude mega-trips)
+        count_query = self.db.query(
+            TripModel.primary_transport_mode,
+            func.count(TripModel.id).label('count')
+        ).filter(
+            TripModel.primary_transport_mode.isnot(None),
+            TripModel.detection_algorithm == 'home_based'
+        )
+
+        if start_date:
+            count_query = count_query.filter(TripModel.start_time >= start_date)
+        if end_date:
+            count_query = count_query.filter(TripModel.end_time <= end_date)
+
+        count_results = {mode: count for mode, count in count_query.group_by(TripModel.primary_transport_mode).all()}
 
         breakdown = {}
-        for row in results:
-            breakdown[row.primary_transport_mode] = {
-                'count': row.count,
-                'total_distance_km': (row.total_distance or 0) / 1000,
-                'avg_distance_km': (row.avg_distance or 0) / 1000,
+        for mode, total_distance in distance_results:
+            count = count_results.get(mode, 0)
+            distance_km = (total_distance or 0) / 1000
+            breakdown[mode] = {
+                'count': count,
+                'total_distance_km': distance_km,
+                'avg_distance_km': (distance_km / count) if count > 0 else 0,
             }
 
         return breakdown
