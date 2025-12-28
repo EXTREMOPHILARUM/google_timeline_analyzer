@@ -223,6 +223,22 @@ class TripStatistics:
         Returns:
             List of destinations with visit counts
         """
+        # Note: We use distance_based trips for destinations since home-based trips don't track them
+        # Find the longest distance_based trip (most complete) to avoid counting overlapping trips
+        longest_trip_query = self.db.query(TripModel.id).filter(
+            TripModel.detection_algorithm == 'distance_based'
+        )
+        if start_date:
+            longest_trip_query = longest_trip_query.filter(TripModel.start_time >= start_date)
+        if end_date:
+            longest_trip_query = longest_trip_query.filter(TripModel.end_time <= end_date)
+
+        longest_trip_id = longest_trip_query.order_by(TripModel.total_distance_meters.desc()).limit(1).scalar()
+
+        if not longest_trip_id:
+            return []  # No distance_based trips found
+
+        # Get destinations from only the longest trip
         query = self.db.query(
             PlaceModel.place_id,
             PlaceModel.name,
@@ -234,12 +250,9 @@ class TripStatistics:
             TripDestinationModel, PlaceModel.place_id == TripDestinationModel.place_id
         ).join(
             TripModel, TripDestinationModel.trip_id == TripModel.id
+        ).filter(
+            TripModel.id == longest_trip_id
         )
-
-        if start_date:
-            query = query.filter(TripModel.start_time >= start_date)
-        if end_date:
-            query = query.filter(TripModel.end_time <= end_date)
 
         results = query.group_by(
             PlaceModel.place_id,
@@ -277,7 +290,9 @@ class TripStatistics:
         Returns:
             List of trips
         """
-        query = self.db.query(TripModel)
+        query = self.db.query(TripModel).filter(
+            TripModel.detection_algorithm == 'home_based'  # Exclude distance_based mega-trips
+        )
 
         if by == 'distance':
             query = query.order_by(TripModel.total_distance_meters.desc())
@@ -319,7 +334,9 @@ class TripStatistics:
         Returns:
             Dictionary mapping duration ranges to trip counts
         """
-        trips = self.db.query(TripModel).all()
+        trips = self.db.query(TripModel).filter(
+            TripModel.detection_algorithm == 'home_based'  # Exclude distance_based mega-trips
+        ).all()
 
         distribution = {
             '< 4 hours': 0,
@@ -358,7 +375,9 @@ class TripStatistics:
         Returns:
             Dictionary mapping distance ranges to trip counts
         """
-        trips = self.db.query(TripModel).all()
+        trips = self.db.query(TripModel).filter(
+            TripModel.detection_algorithm == 'home_based'  # Exclude distance_based mega-trips
+        ).all()
 
         distribution = {
             '< 50 km': 0,
